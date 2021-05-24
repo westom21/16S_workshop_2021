@@ -1,0 +1,472 @@
+---
+title: "Mock_Pipeline"
+author: "Alison Bartenslager"
+date: "5/18/2021"
+output: html_document
+---
+
+#if using a Mac, be sure to save your R script to the same working directory where your mapping file and fastq file folder are. That way you will not have to give a path. However, if using a PC, I believe you will have to give a path to your directory each time. 
+
+#a compilation of code from the DADA2 pipeline, Wes Tom, Waseem Abbas, Nirosh Aluthge, Allie Knoell, and Alison Bartenslager
+
+#disclaimer--- for code provided post phyloseq object generation, more packages will need to be installed
+
+#loading packages in
+```{r ,echo=TRUE}
+###to load packages which are not installed use function install.packages("") or BiocManager::install("")
+library("BiocManager")
+library("import")
+library("knitr")
+library("BiocStyle")
+library("ggplot2")
+library("gridExtra")
+library("dada2")
+library("phyloseq")
+library("DECIPHER")
+library("ape")
+library("phangorn")
+library("BiocStyle")
+library("ShortRead")
+###please download the v138 Silva files (should be two) from the following website: https://mothur.org/wiki/silva_reference_files/
+#this will be used for assigning phylum, etc.
+```
+
+#loading packages
+#make sure 'True' is your output
+```{r ,echo=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+library("knitr")
+library("BiocStyle")
+.cran_packages <- c("ggplot2", "gridExtra")
+.bioc_packages <- c("dada2", "phyloseq", "DECIPHER", "phangorn")
+.inst <- .cran_packages %in% installed.packages()
+if(any(!.inst)) {
+   install.packages(.cran_packages[!.inst])
+}
+.inst <- .bioc_packages %in% installed.packages()
+if(any(!.inst)) {
+   source("http://bioconductor.org/biocLite.R")
+   biocLite(.bioc_packages[!.inst], ask = F)
+}
+# Load packages into session, and print package version
+sapply(c(.cran_packages, .bioc_packages), require, character.only = TRUE)
+```
+
+#reading in fastq_files
+```{r ,echo=TRUE}
+fastq_files= "fastq_files_mock_pipeline" #here you will give the folder name where your fastq files are.
+list.files(fastq_files) #listing fastq files
+```
+
+
+#filtering and trimming fastq files
+```{r ,echo=TRUE}
+fnFs <- sort(list.files(fastq_files, pattern="_R1_001.fastq.gz")) #forward reads
+fnRs <- sort(list.files(fastq_files, pattern="_R2_001.fastq.gz")) #reverse reads
+# Extract sample names, assuming filenames have format: SAMPLENAME_XXX.fastq
+sampleNames <- sapply(strsplit(fnFs, "_"), `[`, 1)
+# Specify the full path to the fnFs and fnRs
+fnFs <- file.path(fastq_files, fnFs)
+fnRs <- file.path(fastq_files, fnRs)
+# Extract sample names, assuming filenames have format: SAMPLENAME_XXX.fastq
+sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1)
+fnFs[1:3]
+fnRs[1:3]
+```
+
+#quality plot (foward) to look at Q score
+```{r ,echo=TRUE}
+#The first two forward reads:
+plotQualityProfile(fnFs[1:2])
+#can change to view more than two plots at a time example: plotQualityProfile(fnFs[1:10]) 
+###be sure to know if you are looking at a negative control! Your Q score plots should not look as "good" on a negative vs positive vs sample
+```
+
+#quality plot (reverse) to look at Q score
+```{r ,echo=TRUE}
+#The first two reverse reads:
+plotQualityProfile(fnRs[1:2])
+#can change to view more than two plots at a time example: plotQualityProfile(fnRs[1:10])
+```
+
+#trimming and filtering the F/R reads
+#This can take some time depending on your computer speed, memory, and samples
+```{r ,echo=TRUE}
+filt_path <- file.path(fastq_files, "filtered") 
+if(!file_test("-d", filt_path)) dir.create(filt_path)
+filtFs <- file.path(filt_path, paste0(sampleNames, "_F_filt.fastq.gz"))
+filtRs <- file.path(filt_path, paste0(sampleNames, "_R_filt.fastq.gz"))
+
+#can trim the reads according to what fits your dataset by changing the numbers in 'truncLen=c(240,160)'
+#additionally you can change your maxEE based off of what you are wanting (based off of expected errors)
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(240,150),
+                    maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE,
+                  compress=TRUE, multithread=TRUE, matchIDs = T)
+out
+fnFs
+fnRs
+```
+
+#SAVE! Always save outputs so you can go back to steps if needed!
+```{r ,echo=TRUE}
+saveRDS(out, "out_mock_pipeline.RDS")
+#load("out_mock_pipeline.RDS")
+write.table(out, file="out_mock_pipeline.txt", col.names=T, row.names=T, sep = "\t",quote=F)
+```
+
+
+#Data Statistics after Trimming
+```{r ,echo=TRUE}
+sum(out[,1]) #total reads in---746,124
+sum(out[,2]) #total reads out--- 586,255
+sum(out[,1]) - sum(out[,2]) #reads lost--- 159,869
+sum(out[,2])/sum(out[,1]) # percentage data retained -- 79%--this number is not ideal 
+```
+
+#Dereplication/error plots
+```{r ,echo=TRUE}
+#learning the error rates 
+#to avoid error, due to very low reads
+exists <- file.exists(filtFs) & file.exists(filtRs)
+filtFs <- filtFs[exists]
+filtRs <- filtRs[exists]
+#Dereplication
+derepFs <- derepFastq(filtFs, verbose=TRUE)
+derepRs <- derepFastq(filtRs, verbose=TRUE)
+# Name the derep-class objects by the sample names
+names(derepFs) <- sampleNames
+names(derepRs) <- sampleNames
+
+errF <- learnErrors(filtFs, multithread=TRUE)
+
+errR <- learnErrors(filtRs, multithread=TRUE)
+
+
+plotErrors(errF)
+plotErrors(errR)
+
+
+save(exists, filtFs, filtRs, derepFs, derepRs, errF, errR, file = "error_plots_mock_pipeline.rds")
+#load("error_plots_mock_pipeline.rds")
+```
+
+#applying the learned error rates
+```{r ,echo=TRUE}
+dadaFs <- dada(derepFs, err=errF, multithread=TRUE)
+
+dadaRs <- dada(derepRs, err=errR, multithread=TRUE)
+
+dadaFs[[1]]
+```
+
+#merging the forward and reverse reads together
+```{r ,echo=TRUE}
+mergers_mock_pipeline <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose=T)
+head(mergers_mock_pipeline[[1]])
+save(mergers_mock_pipeline, file = "mergers_mock_pipeline.rds")
+#load("mergers_mock_pipeline.rds")
+```
+
+#constructing a sequence table
+```{r ,echo=TRUE}
+seqtable_mock_pipeline <- makeSequenceTable(mergers_mock_pipeline)
+dim(seqtable_mock_pipeline) #20 1,594 (samples, ASVs)
+#distribution of sequence lengths
+table(nchar(getSequences(seqtable_mock_pipeline)))
+write.table(seqtable_mock_pipeline, file="seqtable_mock_pipeline.txt", col.names=T, row.names=T, sep = "\t",quote=F)
+
+#removing chimeras
+seqtable_mock_pipeline_nochi <- removeBimeraDenovo(seqtable_mock_pipeline)
+write.table(seqtable_mock_pipeline_nochi, file="seqtabNoC.txt", col.names=NA, row.names=T, sep = "\t",quote=F)
+
+save(seqtable_mock_pipeline_nochi, file = "seqtable_mock_pipeline_nochi")
+#load("SEQTAB_nOc.rds")
+dim(seqtable_mock_pipeline_nochi) #20  1,036 (samples, ASVs)
+```
+
+#Assigning Taxonomy 
+```{r ,echo=TRUE}
+fastaRef= "./silva_nr_v138_train_set.fa"
+taxTab_mock_pipeline <- assignTaxonomy(seqtable_mock_pipeline_nochi, refFasta = fastaRef, multithread=TRUE)
+saveRDS(taxTab_mock_pipeline, "taxTab_mock_pipeline.RDS")
+#readRDS("taxTab_mock_pipeline.RDS")
+#taxTab <- readRDS("taxTab_mock_pipeline.RDS")
+
+taxTa_mock_pipeline <- addSpecies(taxTab_mock_pipeline, "silva_species_assignment_v138.fa", verbose=TRUE)
+#35 assigned at species level
+saveRDS(taxTa_mock_pipeline, "taxTa.RDS")
+taxTa_mock_pipeline <- readRDS("taxTa.RDS")
+write.table(taxTa_mock_pipeline, file="Analysis/taxTa_species_mock_pipeline.txt", col.names=T, row.names=T, sep = "\t")
+
+```
+
+#Extracting the standard goods from R
+```{r ,echo=TRUE}
+ # giving our seq headers more manageable names (ASV_1, ASV_2...)
+asv_seqs <- colnames(seqtable_mock_pipeline_nochi)
+asv_headers <- vector(dim(seqtable_mock_pipeline_nochi)[2], mode="character")
+
+for (i in 1:dim(seqtable_mock_pipeline_nochi)[2]) {
+  asv_headers[i] <- paste(">ASV", i, sep="_")
+}
+
+  # making and writing out a fasta of our final ASV seqs:
+asv_fasta <- c(rbind(asv_headers, asv_seqs))
+write(asv_fasta, "Analysis/ASVs_mockpipeline.fa")
+
+  # count table:
+asv_tab <- t(seqtable_mock_pipeline_nochi)
+row.names(asv_tab) <- sub(">", "", asv_headers)
+write.table(asv_tab, "Analysis/ASVs_counts_mockpipeline.txt", sep="\t", quote=F)
+
+ # tax table:
+asv_tax <- taxTab_mock_pipeline
+row.names(asv_tax) <- sub(">", "", asv_headers)
+write.table(asv_tax, "Analysis/ASVs_taxonomy_mockpipeline.txt", sep="\t", quote=F)
+
+
+```
+
+#bring mapping file in
+```{r ,echo=TRUE}
+mappingfile_mock_pipeline <- read.table("mappingfile_mock_pipeline.txt", sep = "\t", header = T)
+#use the View function to make sure your mapping file that is read in is correct
+View(mappingfile_mock_pipeline)
+```
+
+######to generate a tree, you will use mothur. However, for time purposes today we will not. see below for the code on how to do so. (a phylip.tree file is in github if you would like to download it for reference)
+
+##the next few steps you will need mothur in order to generate your phylip.tree (using the .fa file you made in the above chunk)
+
+#here is the website to learn more: https://mothur.org/
+
+#how to make tree in mothur 
+
+#go to your command line
+#make sure you have wget downloaded using homebrew (can be found on homebrews page online: https://brew.sh/)
+#use wget to get silva-- 
+wget https://mothur.s3.us-east-2.amazonaws.com/wiki/silva.nr_v138.tgz
+#unzip- 
+tar -zxvf silva.nr_v138.tgz
+
+#move your .fa file to your mothur folder
+
+#call mothur then you can start aligning (for me I call mothur as such: ~/mothur/mothur)
+pcr.seqs(fasta=silva.nr_v138.align, start=11894, end=25319, keepdots=F, procesors=8) 
+
+#next rename silva
+system(mv silva.nr_v138.pcr.align silva.v4.fasta) #you can rename this how you want #should only need to do once
+
+#align
+align.seqs(fasta=ASVs_mockpipeline.fa, reference=silva.v4.fasta) 
+#copy ASVs_mockpipeline.fa to mothur folder
+#after aligning must make each ASV have a minimum of 10 characters to be recongized (do this outside of mothur... ie need a new terminal)
+sed -i -e 's/>/>AAAAAAAAAA/g' mothur/ASVs_mockpipeline.align
+#also doesnt like ..... must take out (do this outside of mothur... ie need a new terminal)
+sed -i -e 's/\./-/g' mothur/ASVs_mockpipeline.align
+#create distances in mothur
+dist.seqs(fasta=ASVs_mockpipeline.align, processors=2, cutoff=.10, output=phylip)
+
+#last step. finalize tree in mothur 
+clearcut(phylip=/Users/alisonbartenslager/mothur/ASVs_mockpipeline.phylip.dist) 
+#will take awhile
+
+#change ASV back (do this outside of mothur... ie need a new terminal)
+sed -i -e 's/AAAAAAAAAA//g' mothur/ASVs_mockpipeline.phylip.tre
+#move finalized tree back to R working directory before proceeding
+mv ~/mothur/ASVs_mockpipeline.phylip.tre /Users/alisonbartenslager/Desktop
+
+#creating your phyloseq object
+```{r ,echo=TRUE}
+View(mappingfile_mock_pipeline)
+row.names(mappingfile_mock_pipeline) = mappingfile_mock_pipeline$Sample_ID
+#View(mapping_file)
+
+rownames(mappingfile_mock_pipeline) = mappingfile_mock_pipeline$Sample_ID
+
+
+
+#merging taxa table, phylo tree, metadata together
+ps1 <- phyloseq(otu_table(seqtable_mock_pipeline, taxa_are_rows = FALSE))
+
+ps2 <- merge_phyloseq(ps1, sample_data(mappingfile_mock_pipeline))
+ps3 <- merge_phyloseq(ps2, tax_table(taxTa_mock_pipeline))
+
+
+taxa_names(ps3) <- paste0("ASV_", seq(ntaxa(ps3))) #this command is used when wanting to name ASV you can do this later in the pipeline if preferred.
+
+
+
+row.names(mappingfile_mock_pipeline) <- as.character(mappingfile_mock_pipeline[, 1])
+
+
+#import tree from mothur if using for weighted unifrac and certain analysis.
+
+#tree_file <- 'ASVs_mockpipeline.phylip.tre'
+#phylo_tree <- read_tree(tree_file)
+
+
+#you can name your sequences here with ASV_ or do it later in the pipeline.
+taxa_names(ps3) <- paste0("ASV_", seq(ntaxa(ps3)))
+
+
+#renaming merged phyloseq object
+ps_mockpipeline <- ps3
+
+
+save(ps_mockpipeline, file = "ps_mockpipeline.rds")
+load("ps_mockpipeline.rds")
+```
+
+#filtering out Eukaryota
+```{r ,echo=TRUE}
+#making vector to filter out unwanted kingdoms
+remove_kingdoms <- c( "Archaea", "Eukaryota")
+ps_filtered_mockpipeline <- subset_taxa(ps_mockpipeline, !Kingdom %in% remove_kingdoms) #988 taxa and 21 samples
+
+
+save(ps_filtered_mockpipeline, file = "ps_filtered_mockpipeline.rds")
+#load("ps_filtered_mockpipeline.rds")
+```
+
+
+#decontaminating for sequencing contaminates (make sure correct columns are in mapping file)
+```{r ,echo=TRUE}
+#BiocManager::install("decontam")
+library(decontam)
+#for a shorter version of this see men mice and pig on Fernando github (line391) you can also check out the tutorial on: https://benjjneb.github.io/decontam/vignettes/decontam_intro.html
+
+sample_data(ps_filtered_mockpipeline)$is.neg <- sample_data(ps_filtered_mockpipeline)$Type == "NEG_CON"
+contamdf.prev <- isContaminant(ps_filtered_mockpipeline, method="prevalence", neg="is.neg", batch = sample_data(ps_filtered_mockpipeline)$Run, batch.combine = "minimum")
+table(contamdf.prev$contaminant)
+#View(contamdf.prev)
+
+#keeping the contaminants ( this in order to removal further. can also use to see what family etc these are hitting if wanted )
+removal_asv <- which(contamdf.prev$contaminant)
+removal_done <- paste0("ASV_", removal_asv)
+ps_removal_done <- prune_taxa(removal_done, ps_filtered_mockpipeline)
+taxa_names(ps_filtered_mockpipeline)
+ps_removal_done
+#2 "contaminate" taxa
+
+#removal of the contaminants 
+large_keep <- taxa_names(ps_filtered_mockpipeline)
+good_large_taxa <- large_keep[!(large_keep %in% removal_done)]
+good_large_taxa
+ps_no_contamination <- prune_taxa(good_large_taxa, ps_filtered_mockpipeline)
+ps_no_contamination #986 taxa remain
+save(ps_no_contamination, file = "ps_no_contamination.rds")
+#load("ps_no_contamination.rds")
+```
+
+#filtering out neg controls
+```{r ,echo=TRUE}
+ps_mock_neg <- subset_samples(ps_no_contamination, Animal_ID != "NEG_CON")
+ps_mock_neg #19 samples with 986 taxa
+
+save(ps_mock_neg, file = "ps_mock_neg.rds")
+#load("ps_mock_neg.rds")
+```
+
+#filtering on prevelance and total abundance to remove singletons and spurious ASVs
+```{r ,echo=TRUE}
+#prevelence
+prevdf_ps= apply(X = otu_table(ps_mock_neg), 
+                       MARGIN = ifelse(taxa_are_rows(ps_mock_neg), yes = 1, no = 2), 
+                       FUN = function(x){sum(x > 0)})
+prevdf_ps <- data.frame(Prevalence= prevdf_ps, TotalAbundance=taxa_sums(ps_mock_neg))
+View(prevdf_ps)
+
+ps_mock_prev <- rownames(prevdf_ps)[prevdf_ps$Prevalence > 1] #based off of known positive control that was sequenced; for ease of today and a small data set, only set to 1
+ps_mock_prev
+
+ps_mock_prev <- prune_taxa(ps_mock_prev, ps_mock_neg)
+ps_mock_prev #270 taxa
+sum(otu_table(ps_mock_prev))/sum(otu_table(ps_mock_neg)) #96% those reads retained
+save(ps_mock_prev, file = "ps_mock_prev.rds")
+load("ps_mock_prev.rds")
+sum(otu_table(ps_mock_prev)) #total reads retained 96% from 453,248reads
+
+
+
+#total abundance  
+abund_ps= apply(X = otu_table(ps_mock_prev), 
+                       MARGIN = ifelse(taxa_are_rows(ps_mock_prev), yes = 1, no = 2), 
+                       FUN = function(x){sum(x > 0)})
+abund_ps <- data.frame(Prevalence= abund_ps, TotalAbundance=taxa_sums(ps_mock_prev))
+View(abund_ps)
+
+ps_mock_total_abund <- rownames(abund_ps)[abund_ps$TotalAbundance > 100] ##based off of known positive control that was sequenced; for ease of today and a small data set, only set to 100
+ps_mock_total_abund
+
+ps_mock_analyze <- prune_taxa(ps_mock_total_abund, ps_mock_prev)
+ps_mock_analyze #90 taxa; 19 samples
+sum(otu_table(ps_mock_analyze))/sum(otu_table(ps_mock_prev)) #98% 
+save(ps_mock_analyze, file = "ps_mock_analyze.rds")
+load("ps_mock_analyze.rds")
+sum(otu_table(ps_mock_analyze)) #total reads 445,254 reads
+```
+
+#rarefraction curve
+```{r ,echo=TRUE}
+#will need to install vegan package
+library("vegan")
+rarecurve((otu_table(ps_mock_analyze)), step=50, cex=0.5)
+```
+#normalize data on a proportional basis for further analysis (minus alpha diversity)
+
+```{r ,echo=TRUE}
+norm_mock <-  transform_sample_counts(ps_mock_analyze, function(x) x / sum(x) )
+save(norm_mock, file= "norm_mock.rds")
+load("norm_mock.rds")
+```
+
+
+
+#########for further analysis check out https://vaulot.github.io/tutorials/Phyloseq_tutorial.html#alpha-diversity ##############
+
+
+
+######Some examples
+
+
+#alpha diversity
+```{r ,echo=TRUE}
+
+#simple example of alpha diversity. be sure to check out the above link for other ways to analyze
+set.seed(1234)
+ps_rarefy <- rarefy_even_depth(ps_mockpipeline, sample.size = min(sample_sums(ps_mockpipeline)),
+  rngseed = T, replace = TRUE, trimOTUs = TRUE, verbose = TRUE)
+
+shannon_rarefy_mock <- estimate_richness(ps_rarefy, split = TRUE, measures = c("Shannon"))
+head(shannon_rarefy_mock)
+sample_sums(ps_rarefy) #rarefied to 341 reads
+
+obser_rarefy_mock <- estimate_richness(ps_rarefy, split = TRUE, measures = c("Observed"))
+head(obser_rarefy_mock)
+
+#packages needed for below plots
+library("ggpubr")
+library("tidyverse")
+
+alpha_meas = c("Observed", "Shannon")
+(alpha_mock <- plot_richness(ps_rarefy, "Mock_example", measures=alpha_meas))
+
+
+```
+
+#beta diversity
+```{r ,echo=TRUE}
+#use normalized data! Can change distance to unweighted or weighted unifrac. Bray-Curtis does not require a phylotree
+ord.bray <- ordinate(norm_mock, method="PCoA", distance="bray")
+beta <-plot_ordination(norm_mock, ord.bray, color = "Mock_example") + geom_point(size=3) #geom_point changes size of shapes/color
+beta
+###to add in multiple comparisons use: , color = "example", shape = "example"
+
+```
+
+
+#heatmap
+```{r ,echo=TRUE}
+plot_heatmap(norm_mock, sample.label = "Mock_example", sample.order = "Mock_example", taxa.label = "Family", taxa.order = "Order") 
+```
