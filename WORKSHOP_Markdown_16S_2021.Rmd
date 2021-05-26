@@ -27,6 +27,8 @@ library("ape")
 library("phangorn")
 library("BiocStyle")
 library("ShortRead")
+library("Biostrings") #BiocManager::install("Biostrings")
+
 ###please download the v138 Silva files (should be two) from the following website: https://mothur.org/wiki/silva_reference_files/
 #this will be used for assigning phylum, etc.
 ```
@@ -216,12 +218,12 @@ write(asv_fasta, "Analysis/ASVs_mockpipeline.fa")
 
   # count table:
 asv_tab <- t(seqtable_mock_pipeline_nochi)
-row.names(asv_tab) <- sub(">", "", asv_headers)
+#row.names(asv_tab) <- sub(">", "", asv_headers)
 write.table(asv_tab, "Analysis/ASVs_counts_mockpipeline.txt", sep="\t", quote=F)
 
  # tax table:
 asv_tax <- taxTab_mock_pipeline
-row.names(asv_tax) <- sub(">", "", asv_headers)
+#row.names(asv_tax) <- sub(">", "", asv_headers)
 write.table(asv_tax, "Analysis/ASVs_taxonomy_mockpipeline.txt", sep="\t", quote=F)
 
 
@@ -287,17 +289,17 @@ rownames(mappingfile_mock_pipeline) = mappingfile_mock_pipeline$Sample_ID
 
 
 #merging taxa table, phylo tree, metadata together
-ps1 <- phyloseq(otu_table(seqtable_mock_pipeline, taxa_are_rows = FALSE))
+ps1 <- phyloseq(otu_table(asv_tab, taxa_are_rows = TRUE),sample_data(mappingfile_mock_pipeline),tax_table(asv_tax))
+ps1
 
-ps2 <- merge_phyloseq(ps1, sample_data(mappingfile_mock_pipeline))
-ps3 <- merge_phyloseq(ps2, tax_table(taxTa_mock_pipeline))
-
-
-taxa_names(ps3) <- paste0("ASV_", seq(ntaxa(ps3))) #this command is used when wanting to name ASV you can do this later in the pipeline if preferred.
-
-
-
-row.names(mappingfile_mock_pipeline) <- as.character(mappingfile_mock_pipeline[, 1])
+#create a naming system that links your sequences to an ASV# so that we don't have to deal with it later
+ps1_dna <- Biostrings::DNAStringSet(taxa_names(ps1))
+names(ps1_dna) <- taxa_names(ps1)
+ps1 <- merge_phyloseq(ps1, ps1_dna)
+taxa_names(ps1) <- paste0("ASV", seq(ntaxa(ps1)))
+ps1
+head(refseq(ps1))
+head(otu_table(ps1))
 
 
 #import tree from mothur if using for weighted unifrac and certain analysis.
@@ -306,12 +308,8 @@ row.names(mappingfile_mock_pipeline) <- as.character(mappingfile_mock_pipeline[,
 #phylo_tree <- read_tree(tree_file)
 
 
-#you can name your sequences here with ASV_ or do it later in the pipeline.
-taxa_names(ps3) <- paste0("ASV_", seq(ntaxa(ps3)))
-
-
 #renaming merged phyloseq object
-ps_mockpipeline <- ps3
+ps_mockpipeline <- ps1
 
 
 save(ps_mockpipeline, file = "ps_mockpipeline.rds")
@@ -343,7 +341,7 @@ table(contamdf.prev$contaminant)
 
 #keeping the contaminants ( this in order to removal further. can also use to see what family etc these are hitting if wanted )
 removal_asv <- which(contamdf.prev$contaminant)
-removal_done <- paste0("ASV_", removal_asv)
+removal_done <- paste0("ASV", removal_asv)
 ps_removal_done <- prune_taxa(removal_done, ps_filtered_mockpipeline)
 taxa_names(ps_filtered_mockpipeline)
 ps_removal_done
