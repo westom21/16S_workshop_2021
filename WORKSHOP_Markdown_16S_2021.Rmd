@@ -27,8 +27,8 @@ library("ape")
 library("phangorn")
 library("BiocStyle")
 library("ShortRead")
-###please download the v138 Silva files (should be two) from the following website: https://mothur.org/wiki/silva_reference_files/
-#this will be used for assigning phylum, etc.
+###please download the v138 Silva files (should be two) from the following website: https://benjjneb.github.io/dada2/training.html 
+##be sure to select the most current version of the SILVA database as of this workshop it is Silva version 138.1 
 ```
 
 #loading packages
@@ -92,35 +92,52 @@ plotQualityProfile(fnRs[1:2])
 #trimming and filtering the F/R reads
 #This can take some time depending on your computer speed, memory, and samples
 ```{r ,echo=TRUE}
+#create a path where we want the filtered fastq files to go:
 filt_path <- file.path(fastq_files, "filtered") 
 if(!file_test("-d", filt_path)) dir.create(filt_path)
+
+#Lets create a list of file names that we want to call our filtered fastqs:
 filtFs <- file.path(filt_path, paste0(sampleNames, "_F_filt.fastq.gz"))
 filtRs <- file.path(filt_path, paste0(sampleNames, "_R_filt.fastq.gz"))
 
-#can trim the reads according to what fits your dataset by changing the numbers in 'truncLen=c(240,160)'
+#if you want to take a look at what you did...in the consol type filtFs or filtRs and hit 'return'...this will output your list of filtered file names!
+
+
+#can trim the reads according to what fits your dataset by changing the numbers in 'truncLen=c(200,130)'
 #additionally you can change your maxEE based off of what you are wanting (based off of expected errors)
-out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(240,150),
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(200,130),
                     maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE,
                   compress=TRUE, multithread=TRUE, matchIDs = T)
 out
 fnFs
 fnRs
 ```
+#There may be some installation issues with dada2 that we didn't anticipate. If you get this error: 
+#"Error in validObject(.Object) : invalid class “SRFilterResult” object: superclass "Mnumeric" not defined in the environment of the object's class"
+#try installing the development version of the software
+#using devtools (do not run this if the code above worked!)
+```{r, echo=T}
+#library('utils')
+#remove.packages('dada2')
+
+#library("devtools")
+#devtools::install_github("benjjneb/dada2") #reinstall the developer version of the package then restart your R and R session and see if this helps
+```
 
 #SAVE! Always save outputs so you can go back to steps if needed!
 ```{r ,echo=TRUE}
 saveRDS(out, "out_mock_pipeline.RDS")
-#load("out_mock_pipeline.RDS")
-write.table(out, file="out_mock_pipeline.txt", col.names=T, row.names=T, sep = "\t",quote=F)
+#load("out_mock_pipeline.RDS") # this will load your saved RDS back in so you can continue from this point on
+write.table(out, file="out_mock_pipeline.txt", col.names=T, row.names=T, sep = "\t",quote=F) #generates a table of your reads going in and coming out of filtration
 ```
 
 
 #Data Statistics after Trimming
 ```{r ,echo=TRUE}
-sum(out[,1]) #total reads in---746,124
-sum(out[,2]) #total reads out--- 586,255
-sum(out[,1]) - sum(out[,2]) #reads lost--- 159,869
-sum(out[,2])/sum(out[,1]) # percentage data retained -- 79%--this number is not ideal 
+sum(out[,1]) #total reads in
+sum(out[,2]) #total reads out
+sum(out[,1]) - sum(out[,2]) #reads lost
+sum(out[,2])/sum(out[,1]) # percentage data retained
 ```
 
 #Dereplication/error plots
@@ -130,36 +147,40 @@ sum(out[,2])/sum(out[,1]) # percentage data retained -- 79%--this number is not 
 exists <- file.exists(filtFs) & file.exists(filtRs)
 filtFs <- filtFs[exists]
 filtRs <- filtRs[exists]
-#Dereplication
+#Dereplication (aka break down reads w/in a dataset into reads that are unique! and keep track of how many of each read there are...
 derepFs <- derepFastq(filtFs, verbose=TRUE)
 derepRs <- derepFastq(filtRs, verbose=TRUE)
-# Name the derep-class objects by the sample names
+# Name the derep-class objects by the sample names (lets transfer our sample names to our dereplicated data)
 names(derepFs) <- sampleNames
 names(derepRs) <- sampleNames
 
+#This is the first major part of the dada2 algorithm where sequencing data is processed and the error rates of all
+#transitions and transversions are calculated for your data! 
 errF <- learnErrors(filtFs, multithread=TRUE)
 
 errR <- learnErrors(filtRs, multithread=TRUE)
 
-
+#what does this look like you might ask? lets plot our error rate models
 plotErrors(errF)
 plotErrors(errR)
 
 
 save(exists, filtFs, filtRs, derepFs, derepRs, errF, errR, file = "error_plots_mock_pipeline.rds")
-#load("error_plots_mock_pipeline.rds")
+#load("error_plots_mock_pipeline.rds") #command to load this data in if you would like to do so later after saving
 ```
 
 #applying the learned error rates
 ```{r ,echo=TRUE}
+#lets predict the ASVs for our forward reads using the dada2 algorithm and our predicted fwd error model errF:
 dadaFs <- dada(derepFs, err=errF, multithread=TRUE)
 
+#lets predict the ASVs for our reverse reads using the dada2 algorithm and our predicted rev error model errR:
 dadaRs <- dada(derepRs, err=errR, multithread=TRUE)
 
 dadaFs[[1]]
 ```
 
-#merging the forward and reverse reads together
+#merging the forward and reverse reads together...combining the reads to make our final 250bp ASVs...before some additional QC
 ```{r ,echo=TRUE}
 mergers_mock_pipeline <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose=T)
 head(mergers_mock_pipeline[[1]])
@@ -167,7 +188,7 @@ save(mergers_mock_pipeline, file = "mergers_mock_pipeline.rds")
 #load("mergers_mock_pipeline.rds")
 ```
 
-#constructing a sequence table
+#constructing a sequence table...ASV table...OTU table many names but all the same thing
 ```{r ,echo=TRUE}
 seqtable_mock_pipeline <- makeSequenceTable(mergers_mock_pipeline)
 dim(seqtable_mock_pipeline) #20 1,594 (samples, ASVs)
@@ -175,59 +196,58 @@ dim(seqtable_mock_pipeline) #20 1,594 (samples, ASVs)
 table(nchar(getSequences(seqtable_mock_pipeline)))
 write.table(seqtable_mock_pipeline, file="seqtable_mock_pipeline.txt", col.names=T, row.names=T, sep = "\t",quote=F)
 
-#removing chimeras
+#removing chimeras (reads composed of fragments derived from two parent reads) from the ASV data
 seqtable_mock_pipeline_nochi <- removeBimeraDenovo(seqtable_mock_pipeline)
+
+#create a table where you can easily look at the results
 write.table(seqtable_mock_pipeline_nochi, file="seqtabNoC.txt", col.names=NA, row.names=T, sep = "\t",quote=F)
 
+#save our progress so far
 save(seqtable_mock_pipeline_nochi, file = "seqtable_mock_pipeline_nochi")
-#load("SEQTAB_nOc.rds")
+
+#load("SEQTAB_nOc.rds") #this will load the ASV table with no chimeras back into R if you want
+
+#look at the dimentions of our ASV table...20 samples X 1,036 ASVs...for now
 dim(seqtable_mock_pipeline_nochi) #20  1,036 (samples, ASVs)
 ```
 
-#Assigning Taxonomy 
+#Assigning Taxonomy to our ASV sequences!
 ```{r ,echo=TRUE}
-fastaRef= "./silva_nr_v138_train_set.fa"
+fastaRef= "./silva_nr_v138_train_set.fa" #this needs to be changed to the path where you store your databases, and use the correct name for your most current database
+
+#Lets create a table that contains the taxanomic classification of all of our ASVs:
 taxTab_mock_pipeline <- assignTaxonomy(seqtable_mock_pipeline_nochi, refFasta = fastaRef, multithread=TRUE)
+
+#Save the progress!
 saveRDS(taxTab_mock_pipeline, "taxTab_mock_pipeline.RDS")
+#If you want to read everything back into R:
 #readRDS("taxTab_mock_pipeline.RDS")
 #taxTab <- readRDS("taxTab_mock_pipeline.RDS")
 
+#Lets try and Identify some ASVs at the species level! This is difficult especially in the rumen!
 taxTa_mock_pipeline <- addSpecies(taxTab_mock_pipeline, "silva_species_assignment_v138.fa", verbose=TRUE)
-#35 assigned at species level
+
+#Save the taxa table with species level identification:
 saveRDS(taxTa_mock_pipeline, "taxTa.RDS")
-taxTa_mock_pipeline <- readRDS("taxTa.RDS")
+#taxTa_mock_pipeline <- readRDS("taxTa.RDS")
 write.table(taxTa_mock_pipeline, file="Analysis/taxTa_species_mock_pipeline.txt", col.names=T, row.names=T, sep = "\t")
 
 ```
 
 #Extracting the standard goods from R
 ```{r ,echo=TRUE}
- # giving our seq headers more manageable names (ASV_1, ASV_2...)
-asv_seqs <- colnames(seqtable_mock_pipeline_nochi)
-asv_headers <- vector(dim(seqtable_mock_pipeline_nochi)[2], mode="character")
 
-for (i in 1:dim(seqtable_mock_pipeline_nochi)[2]) {
-  asv_headers[i] <- paste(">ASV", i, sep="_")
-}
-
-  # making and writing out a fasta of our final ASV seqs:
-asv_fasta <- c(rbind(asv_headers, asv_seqs))
-write(asv_fasta, "Analysis/ASVs_mockpipeline.fa")
-
-  # count table:
+# count table:
 asv_tab <- t(seqtable_mock_pipeline_nochi)
-row.names(asv_tab) <- sub(">", "", asv_headers)
 write.table(asv_tab, "Analysis/ASVs_counts_mockpipeline.txt", sep="\t", quote=F)
 
  # tax table:
-asv_tax <- taxTab_mock_pipeline
-row.names(asv_tax) <- sub(">", "", asv_headers)
+asv_tax <- taxTa_mock_pipeline
 write.table(asv_tax, "Analysis/ASVs_taxonomy_mockpipeline.txt", sep="\t", quote=F)
-
 
 ```
 
-#bring mapping file in
+#bring mapping file in...a mapping file is simply a tab separated file that contains all the information you have about each sample that is necessary for analysis (i.e. teatment, date, age, diet, location, animal info etc.). this can be made in excel and saved as a 'tab delimited file' when you save it
 ```{r ,echo=TRUE}
 mappingfile_mock_pipeline <- read.table("mappingfile_mock_pipeline.txt", sep = "\t", header = T)
 #use the View function to make sure your mapping file that is read in is correct
@@ -279,50 +299,42 @@ mv ~/mothur/ASVs_mockpipeline.phylip.tre /Users/alisonbartenslager/Desktop
 #creating your phyloseq object
 ```{r ,echo=TRUE}
 View(mappingfile_mock_pipeline)
-row.names(mappingfile_mock_pipeline) = mappingfile_mock_pipeline$Sample_ID
-#View(mapping_file)
 
+#make sure the row names are the same as the sample ID for merging objects in phyloseq
 rownames(mappingfile_mock_pipeline) = mappingfile_mock_pipeline$Sample_ID
 
 
 
 #merging taxa table, phylo tree, metadata together
-ps1 <- phyloseq(otu_table(seqtable_mock_pipeline, taxa_are_rows = FALSE))
+ps <- phyloseq(otu_table(asv_tab, taxa_are_rows = TRUE),sample_data(mappingfile_mock_pipeline), tax_table(asv_tax))
+ps
 
-ps2 <- merge_phyloseq(ps1, sample_data(mappingfile_mock_pipeline))
-ps3 <- merge_phyloseq(ps2, tax_table(taxTa_mock_pipeline))
-
-
-taxa_names(ps3) <- paste0("ASV_", seq(ntaxa(ps3))) #this command is used when wanting to name ASV you can do this later in the pipeline if preferred.
-
-
-
-row.names(mappingfile_mock_pipeline) <- as.character(mappingfile_mock_pipeline[, 1])
+#Create a refseq component of the phyloseq object that stores your asv sequence as "ASV_#":
+dna <- Biostrings::DNAStringSet(taxa_names(ps))
+names(dna) <- taxa_names(ps)
+ps <- merge_phyloseq(ps, dna)
+taxa_names(ps) <- paste0("ASV_", seq(ntaxa(ps)))
+ps
 
 
-#import tree from mothur if using for weighted unifrac and certain analysis.
-
+#import tree from mothur if using for weighted unifrac and certain analysis. We are not covering this today
 #tree_file <- 'ASVs_mockpipeline.phylip.tre'
 #phylo_tree <- read_tree(tree_file)
 
 
-#you can name your sequences here with ASV_ or do it later in the pipeline.
-taxa_names(ps3) <- paste0("ASV_", seq(ntaxa(ps3)))
-
-
 #renaming merged phyloseq object
-ps_mockpipeline <- ps3
+ps_mockpipeline <- ps
 
 
 save(ps_mockpipeline, file = "ps_mockpipeline.rds")
-load("ps_mockpipeline.rds")
+#load("ps_mockpipeline.rds")
 ```
 
-#filtering out Eukaryota
+#filtering out taxa that we are not interested in...Eukaryota and Archaea:
 ```{r ,echo=TRUE}
 #making vector to filter out unwanted kingdoms
 remove_kingdoms <- c( "Archaea", "Eukaryota")
-ps_filtered_mockpipeline <- subset_taxa(ps_mockpipeline, !Kingdom %in% remove_kingdoms) #988 taxa and 21 samples
+ps_filtered_mockpipeline <- subset_taxa(ps_mockpipeline, !Kingdom %in% remove_kingdoms) 
 
 
 save(ps_filtered_mockpipeline, file = "ps_filtered_mockpipeline.rds")
